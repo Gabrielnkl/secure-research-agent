@@ -1,0 +1,138 @@
+<!-- app/api/dashboard.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Research Agent Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f8f8f7; color: #1a1a18; padding: 2rem; }
+  h1 { font-size: 1.4rem; font-weight: 500; margin-bottom: 1.5rem; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 2rem; }
+  .stat { background: white; border: 0.5px solid #d3d1c7; border-radius: 8px; padding: 1rem; }
+  .stat-label { font-size: 12px; color: #5f5e5a; margin-bottom: 4px; }
+  .stat-value { font-size: 24px; font-weight: 500; }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
+  .chart-card { background: white; border: 0.5px solid #d3d1c7; border-radius: 8px; padding: 1rem; }
+  .chart-card h2 { font-size: 13px; font-weight: 500; color: #5f5e5a; margin-bottom: 1rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; background: #f1efe8; font-weight: 500; }
+  td { padding: 8px 12px; border-top: 0.5px solid #d3d1c7; }
+  .pass { color: #3b6d11; } .warn { color: #854f0b; } .fail { color: #a32d2d; }
+  .section { background: white; border: 0.5px solid #d3d1c7; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+  .section h2 { font-size: 14px; font-weight: 500; margin-bottom: 1rem; }
+  button { padding: 4px 12px; border: 0.5px solid #d3d1c7; border-radius: 6px; background: white; cursor: pointer; font-size: 12px; }
+  button:hover { background: #f1efe8; }
+  button.approve { color: #3b6d11; border-color: #3b6d11; }
+  button.reject { color: #a32d2d; border-color: #a32d2d; }
+</style>
+</head>
+<body>
+<h1>Research Agent</h1>
+
+<div class="stats" id="stats"></div>
+
+<div class="charts">
+  <div class="chart-card"><h2>Cost per LLM call (USD)</h2><canvas id="costChart"></canvas></div>
+  <div class="chart-card"><h2>Latency per step (ms)</h2><canvas id="latencyChart"></canvas></div>
+</div>
+
+<div class="section">
+  <h2>Recent evals</h2>
+  <table><thead><tr><th>Run</th><th>Score</th><th>Regression</th><th>Verdict</th><th>Time</th></tr></thead>
+  <tbody id="evals"></tbody></table>
+</div>
+
+<div class="section">
+  <h2>Pending approvals</h2>
+  <table><thead><tr><th>Workflow</th><th>Summary</th><th>Actions</th></tr></thead>
+  <tbody id="approvals"></tbody></table>
+</div>
+
+<script>
+async function load() {
+  const [stats, events, evals, approvals] = await Promise.all([
+    fetch('/api/stats').then(r=>r.json()),
+    fetch('/api/events').then(r=>r.json()),
+    fetch('/api/evals').then(r=>r.json()),
+    fetch('/api/approvals/pending').then(r=>r.json()),
+  ]);
+
+  // Stats cards
+  const statsEl = document.getElementById('stats');
+  const statItems = [
+    ['Total cost', `$${stats.total_cost_usd}`],
+    ['Avg latency', `${stats.avg_latency_ms}ms`],
+    ['Eval pass rate', `${Math.round(stats.eval_pass_rate*100)}%`],
+    ['LLM calls', stats.total_events],
+  ];
+  statsEl.innerHTML = statItems.map(([label,val])=>
+    `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${val}</div></div>`
+  ).join('');
+
+  // Cost chart
+  new Chart(document.getElementById('costChart'), {
+    type: 'bar',
+    data: {
+      labels: events.slice(-20).map(e=>e.step),
+      datasets: [{ data: events.slice(-20).map(e=>e.cost_usd||0),
+        backgroundColor: '#AFA9EC', borderRadius: 4 }]
+    },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+  });
+
+  // Latency chart
+  new Chart(document.getElementById('latencyChart'), {
+    type: 'bar',
+    data: {
+      labels: events.slice(-20).map(e=>e.step),
+      datasets: [{ data: events.slice(-20).map(e=>e.latency_ms||0),
+        backgroundColor: '#5DCAA5', borderRadius: 4 }]
+    },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+  });
+
+  // Evals table
+  document.getElementById('evals').innerHTML = evals.map(e=>
+    `<tr>
+      <td>${e.run_id}</td>
+      <td>${(e.quality_score*100).toFixed(0)}%</td>
+      <td>${e.regression_flag ? '⚠ yes' : '—'}</td>
+      <td class="${e.verdict}">${e.verdict}</td>
+      <td>${e.timestamp?.slice(0,16).replace('T',' ')}</td>
+    </tr>`
+  ).join('') || '<tr><td colspan="5" style="color:#888">No evals yet</td></tr>';
+
+  // Approvals table
+  document.getElementById('approvals').innerHTML = approvals.map(a=>
+    `<tr>
+      <td><code style="font-size:11px">${a.workflow_id}</code></td>
+      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.summary}</td>
+      <td>
+        <button class="approve" onclick="sendApproval('${a.workflow_id}', true)">Approve</button>
+        <button class="reject" onclick="sendApproval('${a.workflow_id}', false)">Reject</button>
+      </td>
+    </tr>`
+  ).join('') || '<tr><td colspan="3" style="color:#888">No pending approvals</td></tr>';
+}
+
+async function sendApproval(wfId, verdict) {
+  await fetch(`/api/approve/${wfId}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({verdict, note: verdict ? 'approved via dashboard' : 'rejected via dashboard'})
+  });
+  load();
+}
+
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>
+Start the API server:
+
+uvicorn app.api.main:app --reload --port 8000
+Open http://localhost:8000 to see the dashboard. Run a few workflows and watch 
