@@ -110,7 +110,7 @@ secure-research-agent/
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/your-username/secure-research-agent
+git clone https://github.com/gabrielnkl/secure-research-agent
 cd secure-research-agent
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
